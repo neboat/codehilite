@@ -1,0 +1,190 @@
+#!/usr/bin/env python
+
+from __future__ import print_function
+
+import sys, os, argparse
+import re
+import pygments, pygments.lexers, pygments.formatters
+
+def parse_opts(options):
+    """Parse pygments options"""
+    opts = {}
+    for option in options:
+        try:
+            name, value = option.split('=', 1)
+        except ValueError:
+            opts[option] = True
+        else:
+            opts[name] = value
+    return opts
+
+def colorize_block(block, lexer_name, filters, formatter_name, options):
+    """Colorize a given block of code, using lexer <lexer_name> with
+    filters <filters> and formatter <formatter_name>, each modified by
+    <options>."""
+    try:
+        lexer = pygments.lexers.get_lexer_by_name(lexer_name, **options)
+        for filter_name in filters:
+            lexer.add_filter(filter_name)
+        formatter = pygments.formatters.get_formatter_by_name(formatter_name, **options)
+        return pygments.highlight(block, lexer, formatter)
+
+    except Exception:
+        import traceback
+        info = traceback.format_exception(*sys.exc_info())
+        msg = info[-1].strip()
+        print("\n{0}: Warning while highlighting \"{1}\" with lexer \"{2}\":".format(sys.argv[0], block, lexer),
+              file=sys.stderr)
+        if len(info) >= 3:
+            # extract relevant file and position info
+            msg += '\n   (f%s)' % info[-2].split('\n')[0].strip()[1:]
+            print(msg, file=sys.stderr)
+
+        return block
+
+def colorize_file(inF, outF, verbose, filters, formatter_name, ext_options):
+    """Colorize each line in <inF>, using <formatter> and <filters>, and write output to <outF>"""
+
+    if verbose:
+        sys.stdout.write("{0}: pygmentizing in-paragraph code".format(sys.argv[0]))
+
+    outF.write("\\makeatletter\n")
+
+    blocks_processed = 0
+
+    block = ""
+    head = ""
+
+    for line in inF:
+        if "@codehilite@InParCode@" in line:
+            if head != "":
+                # parse argument line
+                (block_name, args_string) = head.strip().strip(']').split('[',1)
+                args = args_string.split('-')
+                options = []
+                verbenvironment = 'SaveVerbatim'
+                lexer_name = "null"
+                for arg in args:
+                    if arg == "":
+                        continue
+                    (arg_flag, arg_space, arg_body) = arg.strip().partition(' ')
+                    if arg_flag == 'l':
+                        # Lexer definition
+                        lexer_name = arg_body.strip()
+                    else:
+                        # Lexer or formatter option
+                        options.append(arg_body.strip())
+                        if 'verbenvironment=' in arg_body:
+                            verbenvironment = arg_body.partition('verbenvironment=')[-1]
+
+                opts = parse_opts(ext_options + options)
+                opts['verbenvironment'] = verbenvironment
+                opts['saveverbatimname'] = block_name
+
+                if lexer_name != "null":
+                    output = colorize_block(block, lexer_name, filters, formatter_name, opts)
+                else:
+                    output = "\begin{" + verbenvironment + "}{" + block_name +"}\n" \
+                        + block \
+                        + "\end{" + verbenvironment + "}\n"
+
+                outF.write(output)
+                blocks_processed += 1
+                # Print simple status bar
+                if verbose and blocks_processed % 10 == 0:
+                    sys.stdout.write('.')
+                    sys.stdout.flush()
+
+                block = ""
+
+            head = line
+        else:
+            block += line
+
+    # Handle final code block
+    if head != "":
+        # parse argument line
+        (block_name, args_string) = head.strip().strip(']').split('[',1)
+        args = args_string.split('-')
+        options = []
+        verbenvironment = 'SaveVerbatim'
+        lexer_name = "null"
+        for arg in args:
+            if arg == "":
+                continue
+            (arg_flag, arg_space, arg_body) = arg.strip().partition(' ')
+            if arg_flag == 'l':
+                # Lexer definition
+                lexer_name = arg_body.strip()
+            else:
+                # Lexer or formatter option
+                options.append(arg_body.strip())
+                if 'verbenvironment=' in arg_body:
+                    verbenvironment = arg_body.partition('verbenvironment=')[-1]
+
+        opts = parse_opts(ext_options + options)
+        opts['verbenvironment'] = verbenvironment
+        opts['saveverbatimname'] = block_name
+
+        if lexer_name != "null":
+            output = colorize_block(block, lexer_name, filters, formatter_name, opts)
+        else:
+            output = "\begin{" + verbenvironment + "}{" + block_name +"}\n" \
+                + block \
+                + "\end{" + verbenvironment + "}\n"
+
+        outF.write(output)
+        blocks_processed += 1
+
+    outF.write("\\makeatother\n")
+    return blocks_processed
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        description='Use Pygments to colorize the inline code in <input_file>, writing the output to <output_file>.')
+    parser.add_argument('inF', metavar='<input_file>', type=argparse.FileType('r'))
+    parser.add_argument('outFile', metavar='<output_file>')
+    parser.add_argument('formatter', metavar='<pygments_formatter>', nargs='?', default="cilkbook")
+    parser.add_argument('options', metavar='pygments_options', nargs='*',
+                        default=[])
+    parser.add_argument('filters', metavar='pygments_filters', nargs='*',
+                        default=["tokenmerge"])
+    parser.add_argument('--verbose', '-v', action='store_true')
+
+    args = parser.parse_args()
+
+    ## Open a temporary file for the output
+    try:
+        outF = open(args.outFile+".tmp", 'w')
+    except IOError:
+        import traceback
+        info = traceback.format_exception(*sys.exc_info())
+        msg = info[-1].strip()
+        print("\n{0}: Error opening temporary output file \"{1}\":".format(sys.argv[0], args.outFile+".tmp"),
+              file=sys.stderr)
+        print(msg, file=sys.stderr)
+        sys.exit(-1)
+
+    blocks_processed = colorize_file(args.inF, outF, args.verbose,
+                                     args.filters,
+                                     args.formatter, args.options)
+
+    outF.close()
+    args.inF.close()
+
+    # Put complete working output file in place of output file
+    try:
+        os.rename(args.outFile+".tmp", args.outFile)
+    except OSError:
+        import traceback
+        info = traceback.format_exception(*sys.exc_info())
+        msg = info[-1].strip()
+        print("\n{0}: Error copying colorization in \"{1}\" to \"{2}\":".format(sys.argv[0], args.outFile+".tmp", args.outFile),
+              file=sys.stderr)
+        print(msg, file=sys.stderr)
+        sys.exit(-1)
+
+    # Complete progress bar
+    if args.verbose:
+        print("{0} blocks processed".format(blocks_processed))

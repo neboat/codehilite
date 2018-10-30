@@ -1,0 +1,128 @@
+#!/usr/bin/env python
+
+from __future__ import print_function
+
+import sys, os, argparse
+import re
+import pygments, pygments.lexers, pygments.formatters
+
+def parse_formatter_opts(formatter_options):
+    """Parse pygments formatter options"""
+    fmtr_opts = {}
+    for option in formatter_options:
+        try:
+            name, value = option.split('=', 1)
+        except ValueError:
+            fmtr_opts[option] = True
+        else:
+            fmtr_opts[name] = value
+    return fmtr_opts
+
+
+def colorize_file(inF, outF, verbose, filters, formatter_name, formatter_opts):
+    """Colorize each line in <inF>, using <formatter> and <filters>, and write output to <outF>"""
+
+    # Generate formatter options from list
+    fmtr_opts = parse_formatter_opts(formatter_opts)
+
+    if verbose:
+        sys.stdout.write("{0}: pygmentizing inline code\n".format(sys.argv[0]))
+
+    outF.write("\\makeatletter\n")
+
+    lines_processed = 0
+    for line in inF:
+
+        # Print simple status bar
+        if verbose and lines_processed % 10 == 0:
+            sys.stdout.write('.')
+            sys.stdout.flush()
+
+        # Parse the input line for code and lexer
+        match = re.match(r'\\codehilite@newinlinecode\s*\{([a-zA-Z@]+)\}\s*\{(.+)\}\s*\{(\w+)\}\s+', line)
+        output = "\\expandafter\\def\\csname " + match.group(1) + "\\endcsname{"
+        lexer = match.group(3)
+        pygcode = match.group(2)
+
+        # Execute pygmentize if necessary
+        if lexer != "null":
+            # Run pygments.highlight
+            try:
+                lex = pygments.lexers.get_lexer_by_name(lexer)
+                for filter_name in filters:
+                    lex.add_filter(filter_name)
+                fmtr = pygments.formatters.get_formatter_by_name(formatter_name, **fmtr_opts)
+
+                pygcode_out = pygments.highlight(pygcode, lex, fmtr)
+                pygcode = pygcode_out.rstrip('\n')
+
+            except Exception:
+                import traceback
+                info = traceback.format_exception(*sys.exc_info())
+                msg = info[-1].strip()
+                print("\n{0}: Warning while highlighting \"{1}\" with lexer \"{2}\":".format(sys.argv[0], pygcode, lexer),
+                      file=sys.stderr)
+                if len(info) >= 3:
+                    # extract relevant file and position info
+                    msg += '\n   (f%s)' % info[-2].split('\n')[0].strip()[1:]
+                    print(msg, file=sys.stderr)
+                continue
+
+        # Write pygmentized code to (working) output file
+        output += pygcode + "}\n"
+        outF.write(output)
+
+        lines_processed += 1
+
+    outF.write("\\makeatother\n")
+    return lines_processed
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        description='Use Pygments to colorize the inline code in <input_file>, writing the output to <output_file>.')
+    parser.add_argument('inF', metavar='<input_file>', type=argparse.FileType('r'))
+    parser.add_argument('outFile', metavar='<output_file>')
+    parser.add_argument('formatter', metavar='<pygments_formatter>', nargs='?', default="cilkbook")
+    parser.add_argument('formatter_options', metavar='pygments_formatter_options', nargs='*',
+                        default=["inline"])
+    parser.add_argument('filters', metavar='pygments_filters', nargs='*',
+                        default=["tokenmerge"])
+    parser.add_argument('--verbose', '-v', action='store_true')
+
+    args = parser.parse_args()
+
+    ## Open a temporary file for the output
+    try:
+        outF = open(args.outFile+".tmp", 'w')
+    except IOError:
+        import traceback
+        info = traceback.format_exception(*sys.exc_info())
+        msg = info[-1].strip()
+        print("\n{0}: Error opening temporary output file \"{1}\":".format(sys.argv[0], args.outFile+".tmp"),
+              file=sys.stderr)
+        print(msg, file=sys.stderr)
+        sys.exit(-1)
+
+    lines_processed = colorize_file(args.inF, outF, args.verbose,
+                                    args.filters,
+                                    args.formatter, args.formatter_options)
+
+    outF.close()
+    args.inF.close()
+
+    # Put complete working output file in place of output file
+    try:
+        os.rename(args.outFile+".tmp", args.outFile)
+    except OSError:
+        import traceback
+        info = traceback.format_exception(*sys.exc_info())
+        msg = info[-1].strip()
+        print("\n{0}: Error copying colorization in \"{1}\" to \"{2}\":".format(sys.argv[0], args.outFile+".tmp", args.outFile),
+              file=sys.stderr)
+        print(msg, file=sys.stderr)
+        sys.exit(-1)
+
+    # Complete progress bar
+    if args.verbose:
+        print("{0} lines processed".format(lines_processed))
